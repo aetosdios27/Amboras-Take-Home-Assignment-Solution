@@ -1,30 +1,52 @@
-Amboras Store Analytics Dashboard
+# Amboras Store Analytics Dashboard
+
 Analytics dashboard for Amboras store owners. Surfaces revenue (today/week/month), conversion funnel stages, top 10 products by revenue, and a live activity feed.
 
-Heads up: This uses in-memory TypeORM repositories and mock header-based auth. No real database, no real JWT. The architecture is production-shaped but the plumbing is simulated.
+> **Heads up:** This uses in-memory TypeORM repositories and mock header-based auth. No real database, no real JWT. The architecture is production-shaped but the plumbing is simulated.
 
+---
 
-Stack
-LayerChoiceBackendNestJS (TypeScript)FrontendNext.js (TypeScript)ORM / DBTypeORM — in-memory repositoriesRuntimeBunAPI styleREST
+## Stack
 
-Setup
-Prerequisites
+| Layer | Choice |
+|---|---|
+| Backend | NestJS (TypeScript) |
+| Frontend | Next.js (TypeScript) |
+| ORM / DB | TypeORM — in-memory repositories |
+| Runtime | Bun |
+| API style | REST |
 
-Bun v1.0+
-Node.js v18+ (for tooling compatibility)
+---
 
-Backend
-bashcd backend
+## Setup
+
+### Prerequisites
+- Bun v1.0+
+- Node.js v18+ (for tooling compatibility)
+
+### Backend
+```bash
+cd backend
 bun install
 cp .env.example .env
-The .env is wired for a real PostgreSQL connection that isn't used yet. Leave defaults as-is for local dev.
+```
+
+The `.env` is wired for a real PostgreSQL connection that isn't used yet. Leave defaults as-is for local dev.
+
 Seed the in-memory store before starting the server — without this, all API responses return empty:
-bashbun run src/seed.ts
+```bash
+bun run src/seed.ts
+```
+
 Start the dev server:
-bashbun run start:dev
+```bash
+bun run start:dev
 # → http://localhost:3001
-Frontend
-bashcd ../frontend
+```
+
+### Frontend
+```bash
+cd ../frontend
 bun install
 cp .env.example .env.local
 ```
@@ -32,8 +54,11 @@ cp .env.example .env.local
 Set the backend URL in `.env.local`:
 ```
 NEXT_PUBLIC_API_URL=http://localhost:3001
+```
+
 Start the dev server:
-bashbun run dev
+```bash
+bun run dev
 # → http://localhost:3000
 ```
 
@@ -143,3 +168,4 @@ bashbun run dev
 // TODO: add Redis caching for /overview and /top-products endpoints
 // TODO: add WebSocket/SSE support for activity feed
 // TODO: add video walkthrough link
+```
