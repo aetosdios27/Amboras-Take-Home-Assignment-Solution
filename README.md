@@ -21,17 +21,22 @@ Analytics dashboard for Amboras store owners. Shows revenue (today/week/month), 
 ## Setup
 
 **Prerequisites:** Bun v1.0+, Node.js v18+
+```bash
+git clone git@github.com:aetosdios27/Amboras-Take-Home-Assignment-Solution.git
+cd Amboras-Take-Home-Assignment-Solution
+```
 
 ### Backend
 ```bash
 cd backend
 bun install
 cp .env.example .env
+# Fill in .env with your values
 bun run src/seed.ts    # required — populates in-memory store; skip this and every endpoint returns empty
 bun run start:dev      # → http://localhost:3001
 ```
 
-`.env` is pre-wired for a PostgreSQL connection string that goes nowhere — the in-memory repos intercept all persistence calls. Leave defaults as-is.
+`.env` is pre-wired for PostgreSQL but the in-memory repos intercept all persistence calls. Leave defaults as-is for local dev.
 
 ### Frontend
 ```bash
@@ -42,7 +47,7 @@ cp .env.example .env.local
 bun run dev            # → http://localhost:3000
 ```
 
-That's it. If you see skeleton loaders on first paint and then data populates, it's working.
+If you see skeleton loaders on first paint and then data populates, it's working.
 
 ---
 
