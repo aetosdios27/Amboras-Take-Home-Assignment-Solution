@@ -1,171 +1,177 @@
 # Amboras Store Analytics Dashboard
 
-Analytics dashboard for Amboras store owners. Surfaces revenue (today/week/month), conversion funnel stages, top 10 products by revenue, and a live activity feed.
+Analytics dashboard for Amboras store owners. Shows revenue (today/week/month), conversion funnel, top 10 products by revenue, and a recent activity feed.
 
-> **Heads up:** This uses in-memory TypeORM repositories and mock header-based auth. No real database, no real JWT. The architecture is production-shaped but the plumbing is simulated.
+> **What's real vs. fake:** The architecture, API structure, aggregation logic, and multi-tenancy patterns are production-intentioned. The database is in-memory (data resets on restart), and auth is mock headers (trivially spoofable). Both are called out explicitly wherever they matter.
 
 ---
 
 ## Stack
 
-| Layer | Choice |
-|---|---|
-| Backend | NestJS (TypeScript) |
-| Frontend | Next.js (TypeScript) |
-| ORM / DB | TypeORM — in-memory repositories |
-| Runtime | Bun |
-| API style | REST |
+| Layer | Choice | Rejected |
+|---|---|---|
+| Backend | NestJS (TypeScript) | Express — NestJS gives DI, guards, and decorators out of the box, which matters for clean multi-tenancy |
+| Frontend | Next.js (TypeScript) | CRA / Vite SPA — Next.js gives us SSR as a future option without a rewrite |
+| ORM | TypeORM (in-memory repos) | Prisma — TypeORM's repository pattern maps more naturally to the service-layer architecture used here |
+| Runtime | Bun | npm/yarn — faster installs and script execution; no meaningful tradeoff at this scale |
+| API | REST | GraphQL — unnecessary for a fixed set of dashboard queries with no nested/variable data shapes |
 
 ---
 
 ## Setup
 
-### Prerequisites
-- Bun v1.0+
-- Node.js v18+ (for tooling compatibility)
+**Prerequisites:** Bun v1.0+, Node.js v18+
 
 ### Backend
 ```bash
 cd backend
 bun install
 cp .env.example .env
+bun run src/seed.ts    # required — populates in-memory store; skip this and every endpoint returns empty
+bun run start:dev      # → http://localhost:3001
 ```
 
-The `.env` is wired for a real PostgreSQL connection that isn't used yet. Leave defaults as-is for local dev.
-
-Seed the in-memory store before starting the server — without this, all API responses return empty:
-```bash
-bun run src/seed.ts
-```
-
-Start the dev server:
-```bash
-bun run start:dev
-# → http://localhost:3001
-```
+`.env` is pre-wired for a PostgreSQL connection string that goes nowhere — the in-memory repos intercept all persistence calls. Leave defaults as-is.
 
 ### Frontend
 ```bash
 cd ../frontend
 bun install
 cp .env.example .env.local
+# Set: NEXT_PUBLIC_API_URL=http://localhost:3001
+bun run dev            # → http://localhost:3000
 ```
 
-Set the backend URL in `.env.local`:
-```
-NEXT_PUBLIC_API_URL=http://localhost:3001
-```
-
-Start the dev server:
-```bash
-bun run dev
-# → http://localhost:3000
-```
+That's it. If you see skeleton loaders on first paint and then data populates, it's working.
 
 ---
 
 ## Architecture Decisions
 
-### 1. Pre-aggregated metrics over raw event queries
+### 1. Pre-aggregated daily metrics over runtime event aggregation
 
-**Decision:** Revenue, conversion, and product metrics are served from two pre-aggregated entities — `DailyStoreMetricsEntity` and `DailyProductMetricsEntity`. The API sums these per requested range (today / week / month) at query time rather than scanning the raw event log.
+**Chose:** `DailyStoreMetricsEntity` and `DailyProductMetricsEntity` — pre-rolled daily summaries queried and summed at request time per range (today / week / month).
 
-**Why:** At ~10,000 events/minute, querying raw events inline would blow the < 2s load target. Daily roll-ups keep aggregate queries fast and predictable regardless of event volume.
+**Rejected:** Querying `EventEntity` directly for aggregates (e.g. `SUM(revenue) WHERE date >= X GROUP BY product`).
 
-**Tradeoffs:**
-- Metrics reflect data as of the last completed roll-up, not the current moment. There's inherent lag.
-- Requires a reliable background job to run daily aggregations. If that job fails silently, dashboards go stale.
-- The roll-up process itself isn't implemented here — it's assumed as a precondition.
+**Why it matters to the store owner:** A store owner opens their dashboard first thing in the morning to decide what to promote, what's underperforming, and whether yesterday was good or bad. If that page takes 6 seconds to load, they stop trusting it. The < 2s target isn't arbitrary — it's the difference between a tool people open daily and one they stop using.
 
----
+**Concrete tradeoff:** At 10,000 events/minute, a 30-day revenue query on raw events scans ~432M rows. With pre-aggregated daily rows, the same query scans at most 30 rows per store. That's the difference between a ~4-6s query and a ~5ms query on Postgres without heroic indexing.
 
-### 2. Hybrid: batch aggregates + direct queries for activity feed
+**What we gave up:** Metrics reflect data as of the last completed roll-up. A purchase made at 11:58pm may not appear until tomorrow's aggregation runs. For a daily-summary dashboard, this is acceptable. For a "last 5 minutes" view, it isn't.
 
-**Decision:** Aggregate metrics go through pre-aggregated tables (batch). The recent activity feed queries `EventEntity` directly, ordered by `timestamp DESC`, scoped to `storeId`.
+**At 100M+ events:** The daily roll-up job becomes the critical path. You'd shard the aggregation by `storeId`, run it on a read replica, and consider Materialized Views or a columnar store (ClickHouse, BigQuery) to replace the roll-up entirely.
 
-**Why:** The activity feed needs to show what just happened — batching it would defeat the purpose. Aggregates don't need to be live; the activity feed does.
-
-**Tradeoffs:**
-- True real-time aggregates (e.g. revenue updating on every purchase) would need Kafka Streams, Flink, or an in-memory aggregation layer like Redis. That's out of scope here.
-- The direct event query won't hold up past tens of millions of rows without table partitioning or a dedicated time-series store (InfluxDB, TimescaleDB). At scale, this is the first thing that breaks.
+**What's missing:** The roll-up job itself isn't implemented. Seed data stands in for it. In production this would be a cron job or queue-based worker.
 
 ---
 
-### 3. Client-side data fetching in Next.js
+### 2. Direct query for activity feed vs. batching it
 
-**Decision:** All dashboard data is fetched client-side via `useEffect` + `Promise.all`. No SSR, no RSC data fetching. Skeleton loaders cover the loading state.
+**Chose:** Query `EventEntity` directly — `ORDER BY timestamp DESC LIMIT N WHERE storeId = ?`
 
-**Why:** The dashboard is interactive and user-specific — SSR provides minimal benefit here. Client-side fetching makes it straightforward to add polling, WebSocket updates, or user-driven filtering later without architectural changes.
+**Rejected:** Pre-aggregating or caching the activity feed the same way as metrics.
 
-**Tradeoffs:**
-- First paint is a skeleton shell with no data. On slow connections this is noticeable.
-- Not suitable for public-facing or SEO-sensitive pages — irrelevant for an internal dashboard.
-- As the dashboard grows (more filters, cross-widget state), `useState` per component won't scale. A proper state manager (Zustand, Jotai) should replace it before the component tree gets deep.
+**Why:** The activity feed serves a different user need than the metrics. Metrics answer "how am I doing overall?" — the feed answers "what just happened?" A store owner seeing a spike in the revenue chart wants to immediately scan the feed to understand why. Batching the feed introduces the same lag as the metrics, which breaks that use case.
 
----
+**Concrete tradeoff:** Direct queries are fast now (milliseconds at seed-data scale) and become a liability later. At ~10M events per store, an unindexed `timestamp DESC` scan gets slow. At ~100M events, it breaks without partitioning.
 
-### 4. Multi-tenancy via `storeId` scoping
+**Edge case handled:** Feed is scoped strictly to `storeId` — no cross-tenant event leakage even on direct queries.
 
-**Decision:** Every data access operation filters by `storeId`. The `MockAuthGuard` extracts `storeId` from the `x-store-id` request header and injects it via the `@CurrentUser()` decorator.
+**Edge case not handled:** No pagination or cursor. The feed returns the latest N events and stops. A high-volume store generating 10 events/second will make this feel stale within seconds without a WebSocket push.
 
-**Why:** Hard data isolation between tenants is non-negotiable. Scoping at the query level means there's no path where tenant A's data leaks to tenant B, regardless of what the API layer does above it.
-
-**Tradeoffs:**
-- The current auth is trivially spoofable — any client can set arbitrary headers. This is intentional for local dev but must be replaced before any real deployment.
-- A production system needs JWT or session-based auth where `storeId` is embedded in a verified token, not passed raw in a header.
+**At 100M+ events:** Partition the events table by `(storeId, date)`. For true real-time, move the feed to a dedicated event stream (Kafka topic per store) consumed via SSE or WebSocket. Direct DB queries for a live feed don't survive at scale.
 
 ---
 
-## Performance Notes
+### 3. Client-side fetching over SSR
 
-**What's implemented:**
-- Aggregate queries hit pre-aggregated tables, not raw events
-- Backend uses `Promise.all` where independent queries can run in parallel
-- Frontend fetches overview, top products, and activity concurrently
-- Skeleton loaders prevent blank-screen loading states
+**Chose:** Client-side data fetching — `useEffect` + `Promise.all` for concurrent requests, `useState` for loading/error states, skeleton loaders on first paint.
 
-**What's not implemented but would matter at scale:**
-- **Redis caching** for aggregate data — these change at most once per aggregation cycle, so caching them for 5–60 minutes would cut DB load dramatically
-- **Database indexes** on `storeId`, `date`, and `productId` — assumed to exist, not validated
-- **Table partitioning** by `storeId` and/or `date` for the events table
-- **Connection pooling** configuration for the PostgreSQL layer
+**Rejected:** Next.js SSR (`getServerSideProps`) or React Server Components for data fetching.
+
+**Why:** This dashboard is authenticated, user-specific, and highly interactive. SSR would add latency to the initial HTML response (waiting on API calls server-side) without meaningful benefit — there's nothing to pre-render that's useful before auth resolves. Client-side fetching also makes future additions (polling, WebSocket updates, date range pickers) cheaper to implement.
+
+**Concrete tradeoff:** First paint is a skeleton shell with zero data. On a 3G connection, the user sees bones for 2–3 seconds. For an internal business tool accessed on desktop/broadband, this is acceptable. For a mobile-first product, it wouldn't be.
+
+**Pattern used:** TypeORM repository pattern with a service layer. Controllers are thin — they validate input and call services. Services own all business logic and repository interactions. This keeps controllers testable in isolation and prevents logic from leaking into the HTTP layer.
+
+**State management:** `useState` per component. Works fine at current scope. As soon as cross-widget state is needed (e.g. a date range picker that filters all widgets simultaneously), this needs replacing with Zustand or Jotai. `useContext` would work but gets messy past 2–3 levels.
+
+---
+
+### 4. `storeId` scoping for multi-tenancy
+
+**Chose:** Filter every query by `storeId`, extracted from the `MockAuthGuard` via the `@CurrentUser()` decorator.
+
+**Rejected:** Row-level security at the database layer (Postgres RLS).
+
+**Why:** Application-layer scoping is easier to test, easier to reason about, and doesn't require Postgres-specific schema features. Every repository call explicitly receives `storeId` — there's no ambient trust in the DB session.
+
+**The fake part:** `MockAuthGuard` reads `storeId` from the `x-store-id` request header. Any client can set this to any value and read another store's data. This is intentional for local dev ergonomics but is a complete security hole. In production, `storeId` must come from a verified JWT claim — never a raw header.
+
+**Edge case handled:** `storeId` is validated as present before any query runs. Missing header returns 401, not an empty dataset that silently crosses tenant boundaries.
+
+**Edge case not handled:** No rate limiting per `storeId`. A single tenant could hammer the API and degrade performance for others.
+
+**At 100M+ events:** Application-layer scoping survives fine. The bottleneck becomes query performance, not the scoping pattern itself. Add a composite index on `(storeId, date)` as the first move.
+
+---
+
+## Performance: What's Real vs. Conceptual
+
+**Implemented and working:**
+- Aggregate queries hit pre-aggregated tables — not raw events
+- Frontend fires overview, top-products, and activity requests concurrently via `Promise.all`; no waterfall
+- Skeleton loaders on all data-heavy components — no blank screen flash
+
+**Not implemented (would matter before production):**
+
+| Gap | Impact | Fix |
+|---|---|---|
+| No Redis caching | Aggregate queries hit DB on every page load | Cache with 5–60min TTL; aggregates only change when roll-up runs |
+| No DB indexes validated | Assumed `storeId`, `date`, `productId` are indexed — not confirmed | Add and verify composite indexes before any load testing |
+| No connection pooling config | Default TypeORM pool may be too small under concurrent load | Configure `pg` pool size based on expected concurrency |
+| No table partitioning | Events table becomes a bottleneck past ~50M rows | Partition by `(storeId, date)` |
 
 ---
 
 ## Known Limitations
 
-| Area | Reality |
+| Area | What's actually true |
 |---|---|
-| Database | In-memory only. All data is gone on restart. |
-| Auth | Mock headers. Trivially spoofable. |
-| Aggregation | No roll-up job implemented. Seed data is static. |
-| Real-time | Metrics don't update until page refresh. |
-| Error handling | Basic — API failures surface as empty states, not actionable errors. |
-| Tests | None. |
-| Observability | None. No structured logging, no metrics, no alerting. |
-| Input validation | Minimal. Not hardened against malformed requests. |
+| Database | In-memory. Restart = data gone. |
+| Auth | Mock headers. Any value accepted. Do not deploy. |
+| Roll-up job | Not implemented. Seed data is the stand-in. |
+| Real-time | No push. Metrics are stale until refresh. |
+| Activity feed | No pagination, no cursor, no WebSocket. Returns latest N and stops. |
+| Error states | API failures render as empty widgets, not error messages. Users won't know why data is missing. |
+| Tests | None. Aggregation logic and service layer are the highest-priority targets if adding tests. |
+| Observability | No structured logging, no metrics endpoint, no alerting. |
+| Input validation | Basic. API is not hardened against malformed or adversarial input. |
 
 ---
 
-## What's Missing for Production
+## Production Checklist
 
-- Replace `MockAuthGuard` with JWT — `storeId` must come from a verified token, not a header
-- Swap in-memory repositories for real PostgreSQL with migrations
-- Implement the daily aggregation background job (cron or queue-based)
-- Redis caching layer for aggregate API responses
-- WebSocket or SSE for live activity feed updates
-- Structured logging (Winston or Pino) + monitoring (Prometheus/Grafana)
-- Test coverage: unit on aggregation logic, integration on API endpoints, E2E on critical flows
-- Custom date range support for all analytics views
+- [ ] Replace `MockAuthGuard` with JWT — `storeId` from verified token claim, not header
+- [ ] Swap in-memory repos for real PostgreSQL + TypeORM migrations
+- [ ] Implement daily aggregation worker (cron or BullMQ queue)
+- [ ] Add composite indexes on `(storeId, date)`, `(storeId, productId)`
+- [ ] Redis caching on `/overview` and `/top-products` with TTL aligned to roll-up frequency
+- [ ] WebSocket or SSE for activity feed
+- [ ] Cursor-based pagination on activity feed
+- [ ] Structured logging (Pino) + metrics (Prometheus) + dashboards (Grafana)
+- [ ] Rate limiting per `storeId`
+- [ ] Custom date range support across all analytics views
+- [ ] Test coverage: aggregation logic (unit), API endpoints (integration), auth scoping (security)
 
 ---
-
-## TODO
 ```
 // TODO: replace MockAuthGuard with JWT-based auth
-// TODO: swap in-memory repos with real PostgreSQL + TypeORM migrations
-// TODO: implement daily aggregation cron job
-// TODO: add Redis caching for /overview and /top-products endpoints
-// TODO: add WebSocket/SSE support for activity feed
-// TODO: add video walkthrough link
+// TODO: swap in-memory repos with real PostgreSQL + TypeORM migrations  
+// TODO: implement daily aggregation cron/worker
+// TODO: add Redis caching for /overview and /top-products
+// TODO: add WebSocket/SSE + cursor pagination for activity feed
+// TODO: add video walkthrough link — https://
 ```
