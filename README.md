@@ -53,6 +53,73 @@ If you see skeleton loaders on first paint and then data populates, it's working
 
 ## Architecture Decisions
 
+```mermaid
+graph TD
+    subgraph Client["Frontend (Next.js :3000)"]
+        UI["Dashboard UI"]
+        UC["useEffect + Promise.all"]
+        SK["Skeleton Loaders"]
+        UI --> UC
+        UC --> SK
+    end
+
+    subgraph Backend["Backend (NestJS :3001)"]
+        HDR["x-store-id header"]
+        GAT["MockAuthGuard"]
+        DEC["@CurrentUser() decorator"]
+        HDR --> GAT --> DEC
+
+        subgraph Controllers["Controllers (thin)"]
+            MC["MetricsController"]
+            PC["ProductsController"]
+            AC["ActivityController"]
+        end
+
+        DEC --> MC
+        DEC --> PC
+        DEC --> AC
+
+        subgraph Services["Services (business logic)"]
+            MS["MetricsService"]
+            PS["ProductsService"]
+            AS["ActivityService"]
+        end
+
+        MC --> MS
+        PC --> PS
+        AC --> AS
+
+        subgraph Repos["TypeORM Repositories (in-memory)"]
+            DMR["DailyStoreMetricsEntity"]
+            DPR["DailyProductMetricsEntity"]
+            ER["EventEntity"]
+        end
+
+        MS --> DMR
+        PS --> DPR
+        AS --> ER
+    end
+
+    subgraph Data["Data Layer"]
+        SEED["seed.ts (one-time)"]
+        MEM["In-memory store"]
+        ROLLUP["⚠️ Roll-up worker (not implemented)"]
+        RAW["Raw Events (simulated)"]
+
+        SEED --> MEM
+        RAW -->|"daily aggregation"| ROLLUP
+        ROLLUP -->|"writes"| DMR
+        ROLLUP -->|"writes"| DPR
+        RAW -->|"direct query"| ER
+    end
+
+    UC -->|"GET /metrics/overview"| MC
+    UC -->|"GET /products/top"| PC
+    UC -->|"GET /activity/recent"| AC
+
+    DMR & DPR & ER --> MEM
+```
+
 ### 1. Pre-aggregated daily metrics over runtime event aggregation
 
 **Chose:** `DailyStoreMetricsEntity` and `DailyProductMetricsEntity` — pre-rolled daily summaries queried and summed at request time per range (today / week / month).
