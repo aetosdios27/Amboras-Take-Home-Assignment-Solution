@@ -167,11 +167,3 @@ That's it. If you see skeleton loaders on first paint and then data populates, i
 - [ ] Test coverage: aggregation logic (unit), API endpoints (integration), auth scoping (security)
 
 ---
-```
-// TODO: replace MockAuthGuard with JWT-based auth
-// TODO: swap in-memory repos with real PostgreSQL + TypeORM migrations  
-// TODO: implement daily aggregation cron/worker
-// TODO: add Redis caching for /overview and /top-products
-// TODO: add WebSocket/SSE + cursor pagination for activity feed
-// TODO: add video walkthrough link — https://
-```
