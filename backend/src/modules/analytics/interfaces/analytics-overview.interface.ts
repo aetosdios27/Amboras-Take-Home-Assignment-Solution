@@ -21,4 +21,5 @@ export interface AnalyticsOverview {
     cart_to_checkout_rate: number;
     checkout_to_purchase_rate: number;
   };
+  generated_at?: string;
 }

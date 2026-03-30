@@ -1,5 +1,12 @@
 "use client";
 
+import { useMemo } from "react";
+import {
+  eachDayOfInterval,
+  parseISO,
+  subDays,
+  format as fnsFormat,
+} from "date-fns";
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import {
   ChartContainer,
@@ -15,6 +22,8 @@ import type { AnalyticsOverview } from "@/types/analytics";
 interface RevenueTrendChartProps {
   overview: AnalyticsOverview | undefined;
   isLoading: boolean;
+  from?: string; // yyyy-MM-dd
+  to?: string; // yyyy-MM-dd
 }
 
 const chartConfig: ChartConfig = {
@@ -24,57 +33,101 @@ const chartConfig: ChartConfig = {
   },
 };
 
-function synthesiseTrend(weekRevenue: number, todayRevenue: number) {
-  const priorTotal = Math.max(weekRevenue - todayRevenue, 0);
+/**
+ * Build an array of { date, revenue } points distributed across the
+ * selected date range.  We only have `revenue.week` + `revenue.today`
+ * as aggregates, so we synthesise plausible daily values using a
+ * seeded-random-ish weight spread.
+ *
+ * Now range-aware: labels and bucket count match the actual selection.
+ */
+function synthesiseTrend(
+  weekRevenue: number,
+  todayRevenue: number,
+  from?: string,
+  to?: string
+) {
+  const endDate = to ? parseISO(to) : new Date();
+  const startDate = from ? parseISO(from) : subDays(endDate, 6);
+  const days = eachDayOfInterval({ start: startDate, end: endDate });
 
-  const weights = [0.12, 0.18, 0.14, 0.16, 0.15, 0.25];
-  const days = weights.map((w, i) => {
-    const date = new Date();
-    date.setDate(date.getDate() - (6 - i));
+  // If range is a single day, just return that day
+  if (days.length <= 1) {
+    return [
+      {
+        date: fnsFormat(endDate, "EEE, MMM d"),
+        revenue: Math.round(todayRevenue || weekRevenue),
+      },
+    ];
+  }
+
+  // Distribute "prior" revenue across all days except the last,
+  // last day gets todayRevenue.
+  const priorTotal = Math.max(weekRevenue - todayRevenue, 0);
+  const priorDays = days.length - 1;
+
+  // Vary weights so the line isn't flat
+  const weights = days.slice(0, priorDays).map((_, i) => {
+    // simple deterministic wave
+    return 1 + 0.4 * Math.sin(((i * 2.3) % priorDays) + 0.7);
+  });
+  const wSum = weights.reduce((a, b) => a + b, 0) || 1;
+
+  const points = days.map((d, i) => {
+    const isLast = i === days.length - 1;
     return {
-      date: date.toLocaleDateString("en-US", {
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-      }),
-      revenue: Math.round(w * priorTotal),
+      date: fnsFormat(d, "EEE, MMM d"),
+      revenue: isLast
+        ? Math.round(todayRevenue)
+        : Math.round((weights[i] / wSum) * priorTotal),
     };
   });
 
-  const today = new Date();
-  days.push({
-    date: today.toLocaleDateString("en-US", {
-      weekday: "short",
-      month: "short",
-      day: "numeric",
-    }),
-    revenue: Math.round(todayRevenue),
-  });
-
-  return days;
+  return points;
 }
 
 export function RevenueTrendChart({
   overview,
   isLoading,
+  from,
+  to,
 }: RevenueTrendChartProps) {
+  const data = useMemo(() => {
+    if (!overview) return [];
+    return synthesiseTrend(
+      overview.revenue.week,
+      overview.revenue.today,
+      from,
+      to
+    );
+  }, [overview, from, to]);
+
   if (isLoading || !overview) {
     return (
-      <SectionCard title="Revenue Trend" description="Last 7 days">
+      <SectionCard title="Revenue Trend" description="Selected range">
         <Skeleton className="h-48 w-full rounded-md bg-zinc-800" />
       </SectionCard>
     );
   }
 
-  const data = synthesiseTrend(overview.revenue.week, overview.revenue.today);
   const max = Math.max(...data.map((d) => d.revenue), 1);
+
+  // Decide how many tick labels to show so they don't overlap
+  const tickInterval = data.length <= 7 ? 0 : Math.ceil(data.length / 7) - 1;
 
   return (
     <SectionCard
       title="Revenue Trend"
-      description="Last 7 days · synthesised from weekly aggregate"
+      description={`${data.length} day${
+        data.length === 1 ? "" : "s"
+      } · synthesised from aggregates`}
     >
-      <ChartContainer config={chartConfig} className="h-48 w-full">
+      {/* key on data length + totals so Recharts fully re-mounts on change */}
+      <ChartContainer
+        key={`${data.length}-${overview.revenue.week}-${overview.revenue.today}`}
+        config={chartConfig}
+        className="h-48 w-full"
+      >
         <AreaChart
           data={data}
           margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
@@ -101,9 +154,7 @@ export function RevenueTrendChart({
             tick={{ fontSize: 10, fill: "hsl(240 5% 40%)" }}
             axisLine={false}
             tickLine={false}
-            tickFormatter={(val, i) =>
-              i === 0 || i === data.length - 1 ? val.split(",")[0] : ""
-            }
+            interval={tickInterval}
           />
 
           <YAxis

@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import {
   Bar,
   BarChart,
@@ -44,6 +45,25 @@ export function TopProductsChart({
   isLoading,
   error,
 }: TopProductsChartProps) {
+  const products = data?.items ?? [];
+
+  const chartData = useMemo(
+    () =>
+      products.map((p) => ({
+        name: truncateId(p.product_id),
+        revenue: p.revenue,
+        purchase_count: p.purchase_count,
+        revenue_share: p.revenue_share,
+      })),
+    [products]
+  );
+
+  /* stable identity string so we can key the chart container */
+  const chartKey = useMemo(
+    () => products.map((p) => `${p.product_id}:${p.revenue}`).join("|"),
+    [products]
+  );
+
   if (isLoading) {
     return (
       <Card className="border-zinc-800 bg-zinc-900">
@@ -71,15 +91,6 @@ export function TopProductsChart({
     );
   }
 
-  const products = data?.items ?? [];
-
-  const chartData = products.map((p) => ({
-    name: truncateId(p.product_id),
-    revenue: p.revenue,
-    purchase_count: p.purchase_count,
-    revenue_share: p.revenue_share,
-  }));
-
   return (
     <Card className="border-zinc-800 bg-zinc-900">
       <CardHeader>
@@ -87,7 +98,7 @@ export function TopProductsChart({
           Top Products
         </CardTitle>
         <CardDescription className="text-xs text-zinc-600">
-          By revenue — all time
+          By revenue · selected range
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -96,7 +107,12 @@ export function TopProductsChart({
             <p className="text-sm text-zinc-600">No purchase data yet.</p>
           </div>
         ) : (
-          <ChartContainer config={chartConfig} className="h-64 w-full">
+          /* key forces Recharts to fully re-mount when product data changes */
+          <ChartContainer
+            key={chartKey}
+            config={chartConfig}
+            className="h-64 w-full"
+          >
             <BarChart
               data={chartData}
               layout="vertical"
