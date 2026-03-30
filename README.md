@@ -1,5 +1,9 @@
 # Amboras Store Analytics Dashboard
 
+**Video Walkthrough:** https://www.youtube.com/watch?v=PWrCkJOmxJw
+
+**Time spent:** ~3.5 hours
+
 Analytics dashboard for Amboras store owners. Revenue (today/week/month), conversion funnel, top 10 products, live activity feed, and real-time visitor monitoring.
 
 ---
@@ -317,5 +321,3 @@ graph TD
 - [ ] RS256 keypairs instead of shared HS256 secret
 - [ ] Test coverage: aggregation logic, API endpoints, WebSocket auth
 - [ ] Date range support on funnel and activity feed
-
----
