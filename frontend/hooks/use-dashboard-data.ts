@@ -2,15 +2,16 @@
 
 import { useState, useEffect } from "react";
 import useSWR from "swr";
-import { analyticsService } from "@/services/analytics";
-import type { LiveVisitorsResponse } from "@/services/analytics";
+import { analyticsService, LiveVisitorsResponse } from "@/services/analytics";
+import type { EventType } from "@/types/analytics";
 import { POLL_INTERVAL_OVERVIEW } from "@/lib/constants";
 import { useSocket } from "./use-socket";
 
+// Strictly match the backend payload and RecentEvent[] union types
 export interface ActivityItem {
   event_id: string;
-  event_type: string;
-  timestamp: Date;
+  event_type: EventType;
+  timestamp: string; // ISO string from network
   product_id: string | null;
   amount: number | null;
   currency: string | null;

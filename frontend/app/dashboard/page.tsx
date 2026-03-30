@@ -60,7 +60,6 @@ export default function DashboardPage() {
       localStorage.setItem("userId", newUserId);
       setStoreId(newStoreId);
     } catch {
-      // If re-auth fails, force full re-login
       handleLogout();
     }
   };
@@ -84,7 +83,6 @@ export default function DashboardPage() {
   } = useDashboardData(storeId, from, to);
 
   const currentStore = STORES.find((s) => s.id === storeId);
-
   const rangeKey = `${from ?? "open"}_${to ?? "open"}`;
 
   if (!ready) {
@@ -96,6 +94,11 @@ export default function DashboardPage() {
       </div>
     );
   }
+
+  // Safely extract the dynamically appended generated_at field
+  const overviewWithMeta = overview as unknown as
+    | { generated_at: string | number }
+    | undefined;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -214,7 +217,7 @@ export default function DashboardPage() {
 
         <section aria-label="Recent activity">
           <RecentActivityList
-            data={recentActivity ? { items: recentActivity } : null}
+            data={recentActivity ? { items: recentActivity } : undefined}
             isLoading={isLoading}
             error={errors.recentActivity}
           />
@@ -222,9 +225,9 @@ export default function DashboardPage() {
 
         <footer className="border-t border-zinc-800/60 pt-4">
           <p className="text-[10px] tabular-nums text-zinc-700">
-            {"generated_at" in (overview ?? {}) && overview?.generated_at
+            {overviewWithMeta?.generated_at
               ? `Data as of ${new Date(
-                  overview.generated_at
+                  overviewWithMeta.generated_at
                 ).toLocaleTimeString()}`
               : "Live data"}
           </p>

@@ -10,6 +10,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import type { LabelFormatter } from "recharts/types/component/Label";
 import {
   ChartContainer,
   ChartTooltip,
@@ -40,6 +41,10 @@ const chartConfig: ChartConfig = {
   },
 };
 
+const formatLabelValue: LabelFormatter = (value) => {
+  return typeof value === "number" ? formatCurrency(value) : "";
+};
+
 export function TopProductsChart({
   data,
   isLoading,
@@ -58,7 +63,6 @@ export function TopProductsChart({
     [products]
   );
 
-  /* stable identity string so we can key the chart container */
   const chartKey = useMemo(
     () => products.map((p) => `${p.product_id}:${p.revenue}`).join("|"),
     [products]
@@ -107,7 +111,6 @@ export function TopProductsChart({
             <p className="text-sm text-zinc-600">No purchase data yet.</p>
           </div>
         ) : (
-          /* key forces Recharts to fully re-mount when product data changes */
           <ChartContainer
             key={chartKey}
             config={chartConfig}
@@ -126,7 +129,7 @@ export function TopProductsChart({
               />
               <XAxis
                 type="number"
-                tickFormatter={(v) => formatCurrency(v)}
+                tickFormatter={(v: number) => formatCurrency(v)}
                 tick={{ fontSize: 10, fill: "hsl(240 5% 40%)" }}
                 axisLine={false}
                 tickLine={false}
@@ -165,7 +168,7 @@ export function TopProductsChart({
                 <LabelList
                   dataKey="revenue"
                   position="right"
-                  formatter={(v: number) => formatCurrency(v)}
+                  formatter={formatLabelValue}
                   style={{ fontSize: 10, fill: "hsl(240 5% 50%)" }}
                 />
               </Bar>
