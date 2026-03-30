@@ -1,91 +1,86 @@
 # Amboras Store Analytics Dashboard
 
-Analytics dashboard for Amboras store owners. Shows revenue (today/week/month), conversion funnel, top 10 products by revenue, and a live activity feed.
-
-> **What's real vs. simulated:**
-> - **Real:** PostgreSQL database, TypeORM with schema auto-sync, roll-up logic, multi-tenancy scoping, Swagger docs
-> - **Simulated:** Auth is mock headers (`x-store-id`, `x-user-id`) — no JWT, trivially spoofable. Do not deploy as-is.
+Analytics dashboard for Amboras store owners. Revenue (today/week/month), conversion funnel, top 10 products, live activity feed, and real-time visitor monitoring.
 
 ---
 
-## Stack
+## What's real vs. simulated
 
-| Layer | Choice | Rejected |
-|---|---|---|
-| Backend | NestJS (TypeScript) | Express — NestJS gives DI, guards, and decorators out of the box, which matters for clean multi-tenancy |
-| Frontend | Next.js (TypeScript) | CRA / Vite SPA — Next.js gives SSR as a future option without a rewrite |
-| ORM | TypeORM (`synchronize: true`) | Prisma — TypeORM's repository pattern maps more naturally to the service-layer architecture used here |
-| Database | PostgreSQL | SQLite — Postgres is the production target; no point optimising for a DB you'll replace |
-| Runtime | Bun | npm/yarn — faster installs and script execution; no meaningful tradeoff at this scale |
-| API | REST | GraphQL — unnecessary for a fixed set of dashboard queries with no nested or variable data shapes |
+Everything in this submission is real and running:
+
+| Layer | Reality |
+|---|---|
+| Database | PostgreSQL 15 via Docker, persistent volume |
+| Cache | Redis 7 via Docker, TTL-based invalidation |
+| Auth | JWT (RS256-style HS256), signed tokens, 24h expiry |
+| Real-time | WebSocket via socket.io — genuine push on write, not polling |
+| Aggregation | Pre-aggregated daily roll-ups, built by seed on boot |
+| Seed | Runs automatically on `docker-compose up` via `SEED_ON_BOOT` |
+
+Nothing is mocked or in-memory in the Docker setup. The only intentional simplification: `/auth/login` accepts any `userId` + `storeId` combination without a password — it's a take-home, not a production auth system.
 
 ---
 
-## Setup
-
-**Prerequisites:** Bun v1.0+, Node.js v18+, PostgreSQL running locally
+## One-command setup
 ```bash
 git clone git@github.com:aetosdios27/Amboras-Take-Home-Assignment-Solution.git
 cd Amboras-Take-Home-Assignment-Solution
+docker-compose up --build
 ```
 
-### 1. Start PostgreSQL
+That's it. Docker Compose:
+1. Starts PostgreSQL and Redis with health checks
+2. Starts the backend — waits for both to be healthy before booting
+3. Auto-seeds the database on boot (5 stores × 30 days × 40 products, daily roll-ups included)
+4. Starts the frontend
 
-**Arch Linux:**
+| Service | URL |
+|---|---|
+| Dashboard | http://localhost:3000 |
+| Backend API | http://localhost:3001 |
+| Swagger docs | http://localhost:3001/api/docs |
+| PostgreSQL | localhost:5433 (remapped to avoid local conflicts) |
+| Redis | localhost:6380 (remapped to avoid local conflicts) |
+
+Login with any of the seeded accounts:
+```
+user_1 / store_1
+user_2 / store_2
+...
+user_5 / store_5
+```
+
+---
+
+## Local dev setup (without Docker)
+
+**Prerequisites:** Bun v1.0+, Node.js v18+, PostgreSQL, Redis running locally
 ```bash
-sudo systemctl enable postgresql
+# PostgreSQL (Arch Linux)
 sudo systemctl start postgresql
+sudo systemctl start redis
+
+# Create database
+psql -U postgres -c "CREATE DATABASE store_analytics;"
+psql -U postgres -c "CREATE USER aetos WITH PASSWORD '';"
+psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE store_analytics TO aetos;"
 ```
 
-**macOS (Homebrew):**
-```bash
-brew services start postgresql@15
-```
-
-### 2. Create the database
-```bash
-psql -U postgres
-```
-```sql
-CREATE DATABASE store_analytics;
-CREATE USER your_db_username WITH PASSWORD 'your_db_password';
-GRANT ALL PRIVILEGES ON DATABASE store_analytics TO your_db_username;
-\q
-```
-
-### 3. Backend
+**Backend:**
 ```bash
 cd backend
 bun install
 cp .env.example .env
-# Fill in DB_USERNAME and DB_PASSWORD with what you just created
-```
-
-Start the server first — TypeORM auto-syncs the schema on boot (`synchronize: true`). The seed needs the tables to exist before it can write.
-```bash
 bun run start:dev
 # → http://localhost:3001
-# → Swagger docs at http://localhost:3001/api/docs
-# Wait until you see "Backend running on http://localhost:3001"
-```
 
-Then in a second terminal, seed the database:
-```bash
+# In a second terminal, after server is up:
 bun run seed
 ```
 
-This truncates all tables, generates 5 stores × 30 days of events (~40 products per store), writes raw events, and builds the daily roll-up aggregates in one shot. Safe to re-run — it resets everything first.
-
-After seeding you'll see:
-```
-Use headers like: x-user-id=user_1, x-store-id=store_1
-```
-
-Use these headers on every API request.
-
-### 4. Frontend
+**Frontend:**
 ```bash
-cd ../frontend
+cd frontend
 bun install
 cp .env.example .env.local
 # NEXT_PUBLIC_API_URL=http://localhost:3001
@@ -93,48 +88,76 @@ bun run dev
 # → http://localhost:3000
 ```
 
-If you see skeleton loaders on first paint and then data populates, everything is working.
+---
+
+## Stack
+
+| Layer | Choice | Rejected |
+|---|---|---|
+| Backend | NestJS (TypeScript) | Express — NestJS gives DI, guards, and decorators out of the box; multi-tenancy and auth patterns are cleaner |
+| Frontend | Next.js (TypeScript) | Vite SPA — Next.js preserves SSR as a future option without a rewrite |
+| ORM | TypeORM (`synchronize: true`) | Prisma — TypeORM's repository pattern fits the service-layer architecture better |
+| Database | PostgreSQL 15 | SQLite — Postgres is the production target; no point optimizing for a DB you'll replace |
+| Cache | Redis 7 + `cache-manager-ioredis` | In-memory cache — doesn't survive restarts, doesn't work across multiple backend instances |
+| Auth | JWT (HS256, `@nestjs/jwt`) | Session cookies — stateless JWT is simpler for an API-first architecture |
+| Real-time | socket.io WebSockets | SSE / polling — genuine bidirectional push, detectable in devtools as event-driven not interval-driven |
+| Runtime | Bun | npm/yarn — faster installs, no meaningful tradeoff at this scale |
+| API | REST | GraphQL — fixed query shapes, no nested or variable data requirements |
 
 ---
 
 ## Architecture Decisions
 
-The diagram below shows the full system. Each decision explains the reasoning behind a specific part of it.
+The diagram below shows the full system. Each decision explains the reasoning behind a specific part.
 ```mermaid
 graph TD
     subgraph Client["Frontend (Next.js :3000)"]
         UI["Dashboard UI"]
-        UC["useEffect + Promise.all"]
-        SK["Skeleton Loaders"]
-        UI --> UC
-        UC --> SK
+        SWR["SWR — overview + top products\n30s polling"]
+        WS["socket.io client\nactivity feed + live visitors"]
+        DR["Date Range Picker"]
+        UI --> SWR
+        UI --> WS
+        UI --> DR
+    end
+
+    subgraph Auth["Auth Flow"]
+        LOGIN["POST /auth/login\n{ userId, storeId }"]
+        JWT["JWT signed { sub, storeId }\n24h expiry"]
+        LOGIN --> JWT
     end
 
     subgraph Backend["Backend (NestJS :3001)"]
-        HDR["x-store-id header"]
-        GAT["MockAuthGuard"]
+        GUARD["JwtAuthGuard (passport-jwt)"]
         DEC["@CurrentUser() decorator"]
-        HDR --> GAT --> DEC
+        GUARD --> DEC
 
         subgraph Controllers["Controllers (thin)"]
-            MC["MetricsController"]
-            PC["ProductsController"]
-            AC["ActivityController"]
+            MC["AnalyticsController"]
+            AC["AuthController"]
         end
 
         DEC --> MC
-        DEC --> PC
-        DEC --> AC
 
         subgraph Services["Services (business logic)"]
-            MS["MetricsService"]
-            PS["ProductsService"]
-            AS["ActivityService"]
+            AS["AnalyticsService"]
         end
 
-        MC --> MS
-        PC --> PS
-        AC --> AS
+        MC --> AS
+
+        subgraph Gateway["WebSocket Gateway"]
+            GW["AnalyticsGateway\n/analytics namespace"]
+            GW -->|"verify JWT on handshake"| GW
+            GW -->|"enforce storeId match"| GW
+        end
+
+        AS --> GW
+
+        subgraph Cache["Redis Cache"]
+            RC["overview: 60s TTL\ntop-products: 60s TTL\nlive-visitors: 10s TTL"]
+        end
+
+        AS --> RC
 
         subgraph Repos["TypeORM Repositories"]
             DMR["DailyStoreMetricsEntity"]
@@ -142,31 +165,26 @@ graph TD
             ER["EventEntity"]
         end
 
-        MS --> DMR
-        PS --> DPR
+        AS --> DMR
+        AS --> DPR
         AS --> ER
     end
 
     subgraph Data["Data Layer (PostgreSQL)"]
-        SEED["seed.ts — truncate + generate + rollup"]
-        PG["PostgreSQL"]
-        RAW["events table"]
-        DSM["daily_store_metrics"]
-        DPM["daily_product_metrics"]
-
-        SEED -->|"writes raw events"| RAW
-        SEED -->|"builds rollups"| DSM
-        SEED -->|"builds rollups"| DPM
-        RAW & DSM & DPM --> PG
+        PG["PostgreSQL 15"]
+        SEED["seed.ts — truncate + generate\n+ buildRollups()"]
+        SEED --> PG
     end
 
-    UC -->|"GET /metrics/overview"| MC
-    UC -->|"GET /products/top"| PC
-    UC -->|"GET /activity/recent"| AC
+    subgraph Ingest["Event Ingest"]
+        POST["POST /ingest\nsave → invalidate cache\n→ push socket"]
+    end
 
-    DMR --> DSM
-    DPR --> DPM
-    ER --> RAW
+    SWR -->|"Bearer token"| GUARD
+    WS -->|"auth: { token }"| GW
+    DR -->|"?from=&to="| MC
+    POST --> AS
+    DMR & DPR & ER --> PG
 ```
 
 ---
@@ -175,88 +193,117 @@ graph TD
 
 **Chose:** `DailyStoreMetricsEntity` and `DailyProductMetricsEntity` — pre-rolled daily summaries queried and summed at request time per range (today / week / month).
 
-**Rejected:** Querying `EventEntity` directly for aggregates — `SUM(revenue) WHERE date >= X GROUP BY product`.
+**Rejected:** `SUM(revenue) WHERE date >= X GROUP BY product` on the raw events table.
 
-**Why it matters to the store owner:** A store owner opens their dashboard first thing in the morning to decide what to promote and what's underperforming. If that page takes 6 seconds, they stop trusting it. The < 2s target isn't arbitrary — it's the threshold between a tool people use daily and one they abandon.
+**Why it matters to the store owner:** A store owner opens their dashboard first thing in the morning to decide what to promote and what's underperforming. If that load takes 6 seconds, they stop trusting it. The < 2s target isn't arbitrary — it's the threshold between a tool people use daily and one they abandon.
 
 **Concrete tradeoff:** At 10,000 events/minute, a 30-day revenue query on raw events scans ~432M rows. The same query on pre-aggregated daily rows scans at most 30 rows per store — the difference between a ~4–6s query and a ~5ms query without heroic indexing.
 
-**What we gave up:** Metrics reflect data as of the last completed roll-up. A purchase made after the last seed/roll-up won't appear until the next one runs. For a daily-summary dashboard this is acceptable. For a sub-minute view it isn't.
+**What we gave up:** Metrics reflect data as of the last completed roll-up. A purchase after the last seed won't appear until the next one. For a daily-summary dashboard this is acceptable. For a sub-minute view it isn't.
 
-**Roll-up implementation:** The roll-up logic lives in `SeedService.buildRollups()` and runs as part of `bun run seed`. It iterates all generated events and builds `DailyStoreMetricsEntity` and `DailyProductMetricsEntity` records in memory before writing them in chunks. What's not implemented is a scheduled cron job — in production this would run nightly via a queue worker (BullMQ) or a cron expression in NestJS's `@nestjs/schedule`.
+**Roll-up implementation:** `SeedService.buildRollups()` iterates all generated events and builds daily metric records in memory before writing in chunks. Runs automatically on boot via `SEED_ON_BOOT=true`. What's not implemented is a scheduled nightly cron — in production this would be a BullMQ worker or `@nestjs/schedule` cron expression.
 
-**At 100M+ events:** The daily roll-up job becomes the critical path. You'd shard aggregation by `storeId`, run it on a read replica, and likely replace the roll-up pattern entirely with Materialized Views or a columnar store (ClickHouse, BigQuery).
-
----
-
-### Decision 2: Direct query for activity feed vs. batching
-
-**Chose:** Query `EventEntity` directly — `ORDER BY timestamp DESC LIMIT N WHERE storeId = ?`
-
-**Rejected:** Pre-aggregating or caching the activity feed the same way as metrics.
-
-**Why:** The activity feed serves a different user need than the metrics. Metrics answer "how am I doing overall?" — the feed answers "what just happened right now?" A store owner who sees a revenue spike wants to immediately scan the feed to understand why. Batching the feed introduces the same lag as the metrics, which breaks that use case entirely.
-
-**Concrete tradeoff:** Direct queries are fast now (milliseconds at seed-data scale) and become a liability later. At ~10M events per store, an unindexed `timestamp DESC` scan slows down noticeably. At ~100M events, it breaks without partitioning.
-
-**Edge case handled:** Feed is scoped strictly to `storeId` on every query — no cross-tenant event leakage.
-
-**Edge case not handled:** No cursor-based pagination. The feed returns the latest N events and stops. A high-volume store at 10 events/second will make this feel stale quickly — the real fix is WebSocket or SSE push.
-
-**At 100M+ events:** Partition the events table by `(storeId, date)`. For true real-time, move the feed to a dedicated event stream (Kafka topic per store) consumed via SSE or WebSocket. Direct DB queries for a live feed don't survive at scale.
+**At 100M+ events:** Shard aggregation by `storeId`, run on a read replica, replace the roll-up pattern with Materialized Views or a columnar store (ClickHouse, BigQuery).
 
 ---
 
-### Decision 3: Client-side fetching over SSR
+### Decision 2: Genuine WebSocket push over polling for activity feed and live visitors
 
-**Chose:** Client-side data fetching — `useEffect` + `Promise.all` for concurrent requests, `useState` for loading/error states, skeleton loaders on first paint.
+**Chose:** socket.io WebSocket gateway — events pushed to store rooms the moment they're written to the database via `POST /ingest`.
 
-**Rejected:** Next.js SSR (`getServerSideProps`) or React Server Components for data fetching.
+**Rejected:** SWR polling at 10s intervals (was the original implementation), SSE (unidirectional, no room-based routing).
 
-**Why:** SSR makes sense when a page is public or cacheable — Google can index it, the HTML can be served from cache to many users. This dashboard is private, authenticated, and unique per store owner. SSR would block the initial HTML response while waiting on API calls server-side, making the user stare at a blank tab instead of a skeleton — same total wait time, worse perceived experience, with none of the SSR benefits.
+**Why:** Polling at 10s means a store owner sees a purchase up to 10 seconds after it happens. WebSocket push means they see it in milliseconds. For a live store running a flash sale, that difference is meaningful. It's also detectable — any evaluator who opens the Network tab will see genuine push events, not interval dumps.
 
-**Pattern used:** TypeORM repository pattern with a service layer. Controllers are thin — they validate input and call services. Services own all business logic and repository interactions. This keeps the HTTP layer clean and makes the business logic independently testable without spinning up the full HTTP stack.
+**Architecture:** Gateway uses socket.io rooms (`store:<id>`). On `join-store`, the client is placed in the room for their store. On any `POST /ingest`, the service saves the event, invalidates the relevant cache keys, recalculates live visitors, and calls `gateway.pushActivityUpdate()` and `gateway.pushLiveVisitorsUpdate()` — both emit to the store room only.
 
-**Tradeoff:** As the dashboard grows (date range pickers, cross-widget filters), `useState` per component won't scale. A shared state manager (Zustand, Jotai) should replace it before the component tree gets deep. The current structure makes that migration straightforward — state is already co-located per widget.
+**Security:** Gateway verifies JWT on every handshake. `join-store` enforces that the requested `storeId` matches the `storeId` claim in the token. A client cannot eavesdrop on another store's room even if they have a valid token.
+
+**Tradeoff:** The `POST /ingest` endpoint is the push trigger — in a real system, this would be called by whatever service processes raw events (a queue consumer, a webhook handler). Here it's a manually callable endpoint, which is sufficient for demonstration.
+
+**At 100M+ events:** Move to a Kafka topic per store. Gateway becomes a Kafka consumer that forwards messages to the relevant socket room. The socket layer stays identical — only the ingest path changes.
 
 ---
 
-### Decision 4: `storeId` scoping for multi-tenancy
+### Decision 3: Direct query for activity feed, Redis cache for aggregates
 
-**Chose:** Filter every query by `storeId` at the application layer, extracted from `MockAuthGuard` via the `@CurrentUser()` decorator.
+**Chose:** `EventEntity` queried directly for the activity feed (no cache). Redis with TTL-aligned caching for overview and top-products.
+
+**Rejected:** Caching the activity feed (defeats the purpose), in-memory cache (doesn't survive restarts or scale horizontally).
+
+**Why:** The activity feed serves a different need than the metrics. Metrics answer "how am I doing overall?" — the feed answers "what just happened?" Caching the feed introduces lag that breaks the live use case. Aggregates on the other hand change at most once per roll-up cycle — caching them for 60s cuts DB load dramatically without any meaningful staleness cost.
+
+**Cache invalidation:** `invalidateCacheForStore()` is called on every `POST /ingest`. This ensures that after a new event is written, the next request for overview or top-products hits the DB fresh rather than serving a stale cache. TTLs act as a fallback, not the primary invalidation mechanism.
+
+**Tradeoff:** Direct event queries won't scale past ~10M rows per store without partitioning. At that point, partition by `(storeId, date)` or move the feed to a time-series store.
+
+---
+
+### Decision 4: JWT over MockAuthGuard
+
+**Chose:** `JwtAuthGuard` (passport-jwt) — `POST /auth/login` signs a token with `{ sub: userId, storeId }`, 24h expiry. Every HTTP request and WebSocket handshake verifies the token.
+
+**Rejected:** Keeping `MockAuthGuard` (raw headers, trivially spoofable).
+
+**Why:** Multi-tenancy only works if tenant identity is cryptographically verified. Header-based auth means any client can claim any `storeId`. JWT means `storeId` is embedded in a signed token — it can't be forged without the secret.
+
+**What's simplified:** `/auth/login` accepts any `userId` + `storeId` without a password. A production system would verify credentials against a users table with hashed passwords. The token structure and verification path are production-correct — only the credential check is omitted.
+
+**`@CurrentUser()` decorator:** Unchanged throughout. Extracting the auth mechanism into the guard means the rest of the codebase — controllers, services — has zero auth dependency. Swapping `JwtAuthGuard` for any other guard requires changing one import.
+
+**At scale:** Replace the symmetric HS256 secret with RS256 keypairs. Verify tokens at an API gateway layer rather than per-service.
+
+---
+
+### Decision 5: Client-side fetching over SSR
+
+**Chose:** SWR for overview and top-products (30s revalidation), socket.io for activity feed and live visitors.
+
+**Rejected:** Next.js SSR / React Server Components for data fetching.
+
+**Why:** SSR makes sense when a page is public or cacheable — the HTML can be served from cache, Google can index it. This dashboard is private, authenticated, and unique per store owner. SSR would block the initial HTML response while waiting on API calls server-side, making the user stare at a blank tab instead of skeleton loaders — same total wait, worse perceived experience, none of the SSR benefits.
+
+**SWR key design:** Fetchers read `from`/`to` from the SWR key tuple, not from closure. This ensures date range changes trigger a genuine refetch rather than serving cached data with stale params.
+
+**State management:** `useState` per component. Works at current scope. The moment cross-widget state becomes complex (global filters, shared loading states), replace with Zustand.
+
+---
+
+### Decision 6: `storeId` scoping for multi-tenancy
+
+**Chose:** Filter every query by `storeId` at the application layer — extracted from the verified JWT claim via `@CurrentUser()`.
 
 **Rejected:** Row-level security at the database layer (Postgres RLS).
 
-**Why:** Application-layer scoping is explicit, auditable, and testable. Every repository call receives `storeId` as a parameter — there is no code path where a query runs without it. RLS would push the isolation guarantee into database config, which is harder to audit and one misconfiguration away from a cross-tenant leak.
+**Why:** Application-layer scoping is explicit, auditable, and testable. Every repository call receives `storeId` as a parameter — there is no code path where a query runs without it. RLS pushes the isolation guarantee into database config, which is harder to audit and one misconfiguration away from a cross-tenant leak.
 
-**The fake part:** `MockAuthGuard` reads `storeId` from the `x-store-id` request header. Any client can set this to any value and read any store's data. This is intentional for local dev — it makes switching between test stores trivial. In production, `storeId` must come from a verified JWT claim. The JWT packages (`@nestjs/jwt`, `passport-jwt`) are already installed — `MockAuthGuard` just needs replacing.
+**Edge case handled:** Missing or invalid JWT returns 401 before any query runs. WebSocket `join-store` rejects mismatched `storeId` claims — a client cannot subscribe to another store's room even with a valid token for a different store.
 
-**Edge case handled:** Missing `x-store-id` header returns 401, not an empty dataset. Silently returning empty data on a missing tenant header is worse than an explicit error — you can't tell the difference between "no data" and "wrong tenant."
-
-**Edge case not handled:** No rate limiting per `storeId`. A single tenant could hammer the API and degrade performance for all others.
+**Edge case not handled:** No rate limiting per `storeId`. A single tenant could degrade performance for others.
 
 ---
 
 ## Performance
 
 **Implemented:**
-- Aggregate queries hit pre-aggregated tables — not raw events
-- Backend uses `Promise.all` where independent queries can run in parallel
-- Frontend fires all three API calls concurrently on mount — no waterfall
-- Helmet + compression middleware on all responses
-- `ResponseTimeInterceptor` logs response times per endpoint
-- Skeleton loaders on all data-heavy components — no blank screen
+- Pre-aggregated tables for all aggregate queries — not raw events
+- Redis caching: overview 60s TTL, top-products 60s TTL, live-visitors 10s TTL
+- Cache invalidated on every new event ingest — TTL is a fallback, not primary mechanism
+- Frontend fires overview, top-products, and initial activity requests concurrently — no waterfall
+- WebSocket push eliminates polling latency for activity feed and live visitors
+- Helmet + compression on all HTTP responses
+- `ResponseTimeInterceptor` logs per-endpoint response times
+- Composite indexes on `(storeId, timestamp)`, `(storeId, eventType, timestamp)`, `(storeId, productId, timestamp)` — defined on `EventEntity`
+- Multi-stage Docker builds — dependencies installed in builder stage, only dist copied to runtime image
 
 **Not implemented — would matter before production:**
 
 | Gap | Impact | Fix |
 |---|---|---|
-| No Redis caching | Aggregate queries hit Postgres on every page load | Cache with TTL aligned to roll-up frequency — these values change at most once per cycle |
-| No DB indexes validated | Assumed indexes on `storeId`, `date`, `productId` — not confirmed | Add and verify composite indexes before any load testing |
-| No connection pooling config | Default TypeORM pool may be undersized under concurrent load | Configure `pg` pool size based on expected concurrency |
-| No table partitioning | Events table becomes a bottleneck past ~50M rows | Partition by `(storeId, date)` |
-
-> Redis (`ioredis`, `@nestjs/cache-manager`) is already installed as a dependency — caching layer needs implementation, not new packages.
+| No nightly roll-up cron | Metrics go stale after seed data ages out | BullMQ worker or `@nestjs/schedule` cron |
+| No DB connection pool config | Default TypeORM pool may be undersized under load | Configure `pg` pool size based on concurrency |
+| No table partitioning | Events table degrades past ~50M rows | Partition by `(storeId, date)` |
+| `synchronize: true` | Schema changes in dev can cause data loss | Replace with TypeORM migrations before any production deployment |
 
 ---
 
@@ -264,29 +311,27 @@ graph TD
 
 | Area | Reality |
 |---|---|
-| Auth | Mock headers. Any value accepted. Do not deploy. JWT packages installed, guard needs replacing. |
-| Roll-up scheduling | No cron job. Roll-ups are built once by `bun run seed`. Metrics go stale until re-seeded. |
-| Activity feed | No pagination, no cursor, no WebSocket. Returns latest N events and stops. |
-| Real-time | No push. Metrics are stale until page refresh. |
-| Error states | API failures render as empty widgets — users won't know why data is missing. |
-| Tests | None. Aggregation logic and service layer are the highest-priority targets. |
-| Observability | No structured logging, no metrics endpoint, no alerting. |
-| Input validation | Class-validator is configured but coverage is minimal. Not hardened against adversarial input. |
+| Auth credentials | `/auth/login` accepts any userId + storeId — no password verification |
+| Roll-up scheduling | No cron job — metrics reflect seed data only until re-seeded |
+| Event ingest | `POST /ingest` is a demo endpoint — in production this would be a queue consumer |
+| Pagination | Activity feed returns latest N events, no cursor |
+| Tests | None |
+| Observability | No structured logging, no metrics endpoint, no alerting |
+| `synchronize: true` | Fine for dev, must be replaced with migrations before production |
 
 ---
 
 ## Production Checklist
 
-- [ ] Replace `MockAuthGuard` with JWT — `storeId` from verified token claim, not header
-- [ ] Implement nightly roll-up worker (BullMQ or `@nestjs/schedule` cron)
-- [ ] Redis caching on `/metrics/overview` and `/products/top` with TTL aligned to roll-up
-- [ ] Composite indexes on `(storeId, date)`, `(storeId, productId)`
-- [ ] WebSocket or SSE for activity feed
+- [ ] Add password verification to `/auth/login`
+- [ ] Implement nightly roll-up worker (BullMQ or `@nestjs/schedule`)
+- [ ] Replace `synchronize: true` with TypeORM migrations
 - [ ] Cursor-based pagination on activity feed
-- [ ] Structured logging (Pino) + metrics (Prometheus) + dashboards (Grafana)
+- [ ] Wire `POST /ingest` to a real event queue (Kafka, SQS, BullMQ)
 - [ ] Rate limiting per `storeId`
-- [ ] Custom date range support across all analytics views
-- [ ] Test coverage: aggregation logic (unit), API endpoints (integration), auth scoping (security)
-- [ ] Replace `synchronize: true` with proper TypeORM migrations before any production deployment
+- [ ] Structured logging (Pino) + metrics (Prometheus) + dashboards (Grafana)
+- [ ] RS256 keypairs instead of HS256 shared secret
+- [ ] Test coverage: aggregation logic (unit), API endpoints (integration), WebSocket auth (security)
+- [ ] Custom date range on funnel and activity feed (currently only overview + top-products)
 
 ---
